@@ -1,0 +1,8 @@
+requests
+python-dotenv
+playwright
+pandas
+numpy
+pytz
+yfinance
+scikit-learn

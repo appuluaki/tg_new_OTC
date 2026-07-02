@@ -1,0 +1,14 @@
+# Exclude documentation and local dev artifacts from the Docker build context
+*.md
+.conda/
+.pytest_cache/
+__pycache__/
+.vscode/
+logs/
+reports/
+models/backups/
+data/session.json
+session_state.json
+config/.env
+.env
+*.log
