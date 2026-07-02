@@ -27,7 +27,11 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 RUN python -m playwright install chromium
 
 COPY . /app
+COPY .env.example /app/.env.example
+COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
+RUN chmod +x /app/scripts/entrypoint.sh
 
 EXPOSE 8080
 
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["python", "multi_agent_orchestrator.py"]

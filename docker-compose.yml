@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  worker:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    # Example: override CMD
+    command: ["python", "multi_agent_orchestrator.py"]
