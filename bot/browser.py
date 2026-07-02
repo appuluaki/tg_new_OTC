@@ -252,6 +252,7 @@ class OlymtradeBot:
         page = self._page
         log.info(f"[Browser] Switching to asset: {asset}")
         try:
+            asset_menu_opened = False
             for sel in [
                 '[data-test="assets-tabs-add-button"]',
                 '[data-test="asset-selector"]',
@@ -263,16 +264,42 @@ class OlymtradeBot:
                 '.asset-selection-toggle',
                 '.search-assets-button',
                 '.asset-open-button',
+                '.asset-selector-button',
+                '.select-asset-button',
+                '.market-button',
                 'button:has-text("Select Asset")',
                 'button:has-text("Asset")',
+                'button:has-text("Assets")',
                 'button:has-text("Market")',
+                'button:has-text("Markets")',
             ]:
                 try:
                     await page.click(sel, timeout=1500)
                     await asyncio.sleep(0.4)
+                    asset_menu_opened = True
                     break
                 except Exception:
                     continue
+
+            if not asset_menu_opened:
+                try:
+                    await page.evaluate(r'''() => {
+                        const matchText = /assets?|markets?|asset selector|search assets?|select asset/i;
+                        const candidates = Array.from(document.querySelectorAll('button, a, div, span'));
+                        for (const node of candidates) {
+                            if (!node.offsetParent) continue;
+                            const txt = node.innerText || node.textContent || '';
+                            if (matchText.test(txt)) {
+                                node.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }''')
+                    await asyncio.sleep(0.8)
+                except Exception:
+                    pass
+
             await asyncio.sleep(0.8)
 
             display_asset = _asset_display_name(asset)
@@ -303,17 +330,23 @@ class OlymtradeBot:
             search_selectors = [
                 'input[placeholder*="Search"]',
                 'input[placeholder*="search"]',
-                'input[type="search"]',
-                'input[aria-label*="Search"]',
-                'input[aria-label*="search"]',
-                'input[role="searchbox"]',
+                'input[placeholder*="Find"]',
+                'input[placeholder*="find"]',
                 'input[placeholder*="Asset"]',
                 'input[placeholder*="Symbol"]',
                 'input[placeholder*="Pair"]',
+                'input[aria-label*="Search"]',
+                'input[aria-label*="search"]',
+                'input[role="searchbox"]',
                 '.asset-search input',
                 '.search-input input',
                 '.asset-search-field input',
                 '.search-field input',
+                '.search-box input',
+                '.search-box',
+                '.search-input',
+                '.assets-search input',
+                '.assets-search',
                 'input',
             ]
             search_input = None

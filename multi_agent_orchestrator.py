@@ -410,10 +410,12 @@ class MultiAgentTradingSystem:
                 # Pre-select the asset in the browser so live prices start flowing
                 for pair in self.pairs:
                     try:
-                        await bot.select_asset(pair)
+                        selected = await bot.select_asset(pair)
+                        if not selected:
+                            log.warning(f"[Setup] Asset selection failed for {pair}")
                         await asyncio.sleep(1.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning(f"[Setup] Asset selection error for {pair}: {e}")
 
         return True
 
