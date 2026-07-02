@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / '.env', override=True)
 
-EMAIL    = os.getenv("OLYMPTRADE_EMAIL", "")
-PASSWORD = os.getenv("OLYMPTRADE_PASSWORD", "")
-ASSET    = os.getenv("ASSET", "AUDUSD-OTC")
+EMAIL    = os.getenv("OLYMPTRADE_EMAIL", "mrakillraja@gmail.com")
+PASSWORD = os.getenv("OLYMPTRADE_PASSWORD", "jANUAKILL@123")
+ASSET    = os.getenv("ASSET", "EUR/USD-OTC")
 TRADE_AMOUNT  = float(os.getenv("TRADE_AMOUNT", "1000"))
 TRADE_MODE    = os.getenv("TRADE_MODE", "ftt").lower()
 FTT_DURATION  = int(os.getenv("FTT_DURATION", "60"))
