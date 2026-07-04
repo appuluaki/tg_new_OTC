@@ -132,20 +132,30 @@ def make_otc_provider(
       3. Returns OHLCV built from accumulated ticks.
     """
 
+    # BUG FIX: a single hardcoded [0.5, 5.0] range (EUR/USD-shaped) silently
+    # rejected every price for JPY-quoted pairs (USDJPY-OTC trades ~100-200).
+    # Same bug class as the old tg_algo_adv AUD/USD [0.5, 1.1] bounds issue.
+    def _plausible_range(pair: str) -> Tuple[float, float]:
+        if "JPY" in pair.upper():
+            return (50.0, 250.0)
+        return (0.01, 5.0)
+
     async def _fallback_price_from_page(pair: str) -> Optional[float]:
         """Last-resort: parse price from page title or DOM."""
         import re
+        lo, hi = _plausible_range(pair)
         try:
             title = await page.title()
-            m = re.search(r"(\d{1,2}\.\d{3,6})", title)
+            m = re.search(r"(\d{1,3}\.\d{2,6})", title)
             if m:
                 v = float(m.group(1))
-                if 0.5 <= v <= 5.0:   # EUR/USD range sanity
+                if lo <= v <= hi:
                     return v
         except Exception:
             pass
         try:
-            v = await page.evaluate(r"""() => {
+            v = await page.evaluate(r"""(bounds) => {
+                const [lo, hi] = bounds;
                 const selectors = ['.current-price','.bid-price','.asset-price',
                                    '.price-value','[class*="price"]'];
                 for (const sel of selectors) {
@@ -153,11 +163,11 @@ def make_otc_provider(
                     if (el) {
                         const txt = el.innerText.replace(/[^0-9.]/g,'');
                         const n = parseFloat(txt);
-                        if (n >= 0.5 && n <= 5.0) return n;
+                        if (n >= lo && n <= hi) return n;
                     }
                 }
                 return null;
-            }""")
+            }""", [lo, hi])
             if v:
                 return float(v)
         except Exception:
@@ -167,14 +177,17 @@ def make_otc_provider(
     def provider(pair: str, tf: str) -> pd.DataFrame:
         candle_sec = 300 if tf == "5m" else 60
 
-        # Get latest price — prefer the cache (updated every 30s by orchestrator)
+        # Get latest price — prefer the cache (updated by the orchestrator's
+        # round-robin price refresh, roughly once every N scan cycles for N pairs)
         price = live_price_cache.get(pair)
+        lo, hi = _plausible_range(pair)
 
-        if price is None or not (0.5 <= price <= 5.0):
-            # Cache miss — return empty so engine waits for next cycle
+        if price is None or not (lo <= price <= hi):
+            # Cache miss or implausible price — return empty so engine waits
             import logging
             logging.getLogger("data_provider_otc").warning(
-                f"[OTCData] {pair} {tf}: no live price in cache yet — waiting"
+                f"[OTCData] {pair} {tf}: no plausible live price in cache "
+                f"(got {price!r}, expected [{lo}, {hi}]) — waiting"
             )
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 

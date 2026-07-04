@@ -254,12 +254,25 @@ def _detect_supply_demand_zones(df: pd.DataFrame, lookback: int = 10) -> Tuple[O
     return demand_zone, supply_zone
 
 
-def _confirm_trend_hh_ll(df: pd.DataFrame, bars: int = 3) -> Tuple[str, float]:
+def _confirm_trend_hh_ll(df: pd.DataFrame, bars: int = 5) -> Tuple[str, float]:
     """
     Confirm trend using Higher-Highs/Higher-Lows (uptrend) or
     Lower-Highs/Lower-Lows (downtrend) on the entry-timeframe chart.
     Returns: (trend_type, strength_score)
     trend_type: "STRONG_UP", "UP", "NEUTRAL", "DOWN", "STRONG_DOWN"
+
+    v11 FIX: the old version required EVERY consecutive bar to strictly
+    beat the previous one (AND across the whole window). On noisy
+    tick-derived OTC candles that condition almost never holds even in a
+    real trend — a single small pullback wick anywhere in the window
+    collapsed the result to NEUTRAL/0.0, which then propagated downstream
+    and forced the AI pipeline's regime into permanent RANGING (see
+    MetaClassifierAgent / PPOExecutionPolicyAgent RANGING hard-block).
+    That made it impossible to ever distinguish accumulation (choppy,
+    low net movement) from a real breakout (majority of bars agreeing,
+    high strength) or a reversal (structure flips from majority-up to
+    majority-down across the window). Fixed with a proportional vote
+    instead of a strict AND.
     """
     if len(df) < bars + 2:
         return "NEUTRAL", 0.0
@@ -268,22 +281,33 @@ def _confirm_trend_hh_ll(df: pd.DataFrame, bars: int = 3) -> Tuple[str, float]:
     highs = recent["high"].values
     lows = recent["low"].values
 
-    higher_highs = all(highs[i] > highs[i-1] for i in range(1, len(highs)))
-    higher_lows  = all(lows[i]  > lows[i-1]  for i in range(1, len(lows)))
+    up_votes = sum(1 for i in range(1, len(highs)) if highs[i] > highs[i-1] and lows[i] > lows[i-1])
+    down_votes = sum(1 for i in range(1, len(highs)) if highs[i] < highs[i-1] and lows[i] < lows[i-1])
+    total_moves = len(highs) - 1
+    if total_moves <= 0:
+        return "NEUTRAL", 0.0
 
-    lower_highs  = all(highs[i] < highs[i-1] for i in range(1, len(highs)))
-    lower_lows   = all(lows[i]  < lows[i-1]  for i in range(1, len(lows)))
+    up_ratio = up_votes / total_moves
+    down_ratio = down_votes / total_moves
 
-    if higher_highs and higher_lows:
-        range_up = highs[0] - lows[0]
-        strength = min((highs[-1] - lows[-1]) / range_up, 1.0) if range_up > 0 else 0.0
+    # Net directional displacement across the window, normalized by the
+    # window's own range — this is what actually separates "accumulation"
+    # (small net move, choppy) from "breakout" (large net move, one-sided).
+    window_range = float(np.max(highs) - np.min(lows))
+    net_move = float((highs[-1] + lows[-1]) / 2 - (highs[0] + lows[0]) / 2)
+    displacement = min(abs(net_move) / window_range, 1.0) if window_range > 0 else 0.0
+
+    VOTE_THRESHOLD = 0.6   # majority, not unanimous
+
+    if up_ratio >= VOTE_THRESHOLD and net_move >= 0:
+        strength = max(up_ratio, displacement)
         return ("STRONG_UP" if strength > 0.7 else "UP"), strength
-    elif lower_highs and lower_lows:
-        range_down = highs[-1] - lows[-1]
-        strength = min((highs[0] - lows[0]) / range_down, 1.0) if range_down > 0 else 0.0
+    elif down_ratio >= VOTE_THRESHOLD and net_move <= 0:
+        strength = max(down_ratio, displacement)
         return ("STRONG_DOWN" if strength > 0.7 else "DOWN"), strength
 
-    return "NEUTRAL", 0.0
+    # Neither side has a majority — genuine accumulation/chop, not a bug.
+    return "NEUTRAL", round(displacement * 0.3, 3)
 
 
 def _analyze_previous_candles(df: pd.DataFrame, bars: int = 3) -> Dict[str, Any]:
@@ -496,7 +520,7 @@ class VWAPStrategyAgent:
         demand_zone, supply_zone = _detect_supply_demand_zones(df10s, lookback=10)
 
         # ── Trend Confirmation via Higher Highs/Lows (10S) ──────────────
-        trend_type, trend_strength = _confirm_trend_hh_ll(df10s, bars=3)
+        trend_type, trend_strength = _confirm_trend_hh_ll(df10s, bars=5)
 
         # ── Previous Candle Pattern Prediction (10S) ────────────────────
         candle_analysis = _analyze_previous_candles(df10s, bars=3)

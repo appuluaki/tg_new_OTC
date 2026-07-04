@@ -172,16 +172,27 @@ def _is_stale_frame(df: pd.DataFrame, tf_label: str) -> bool:
     return False
 
 
-def _is_plausible_price(live_price: float) -> bool:
+# Per-pair plausible price ranges. JPY-quoted pairs trade ~100-200, everything
+# else in _OTC_PAIRS trades ~0.5-2.0 — a single hardcoded [0.5, 5.0] range
+# (as used previously here and in data_provider_otc.py, and in the older
+# tg_algo_adv AUD/USD bug) silently rejects every valid USDJPY-OTC price.
+_PAIR_PRICE_RANGES = {
+    "USDJPY-OTC": (50.0, 250.0),
+}
+_DEFAULT_PRICE_RANGE = (0.01, 5.0)
+
+
+def _is_plausible_price(pair: str, live_price: float) -> bool:
     try:
         p = float(live_price)
-        return 0.01 <= p <= 50.0
     except Exception:
         return False
+    lo, hi = _PAIR_PRICE_RANGES.get(pair, _DEFAULT_PRICE_RANGE)
+    return lo <= p <= hi
 
 
-def _inject_live_price(df: pd.DataFrame, live_price: float, tf_label: str) -> pd.DataFrame:
-    if df is None or df.empty or live_price is None or not _is_plausible_price(live_price):
+def _inject_live_price(df: pd.DataFrame, live_price: float, tf_label: str, pair: str = "") -> pd.DataFrame:
+    if df is None or df.empty or live_price is None or not _is_plausible_price(pair, live_price):
         return df
     try:
         out = df.copy()
@@ -223,7 +234,7 @@ def build_data_provider(pair: str):
                         tf_label in ("1m", "5m", "m1", "m5", "M1", "M5")
                         or _is_stale_frame(df, tf_label)
                     ):
-                        df = _inject_live_price(df, live_price, tf_label)
+                        df = _inject_live_price(df, live_price, tf_label, pair=p)
                     return df
             except Exception as e:
                 log.debug(f"[DataProvider] fetch_candles failed for {p}/{tf_label}: {e}")
@@ -245,7 +256,7 @@ def build_data_provider(pair: str):
                 tf_label in ("1m", "5m", "m1", "m5", "M1", "M5")
                 or _is_stale_frame(df, tf_label)
             ):
-                df = _inject_live_price(df, live_price, tf_label)
+                df = _inject_live_price(df, live_price, tf_label, pair=p)
             return df
         except Exception as e:
             log.warning(f"[DataProvider] yfinance fallback failed {p}/{tf_label}: {e}")
@@ -449,16 +460,35 @@ class MultiAgentTradingSystem:
             log.info(f"[Orchestrator] Risk gate blocked: {reason}")
             return
 
-        # ── Refresh live prices for ALL pairs (feeds the OTC tick buffer) ──
-        if self.exec_agent.bot and BOT_AVAILABLE:
-            for pair in self.pairs:
-                try:
+        # ── Refresh live price for ONE pair per cycle (round-robin) ──
+        # BUG FIX: get_current_price() reads whatever chart is currently open in
+        # the browser — it does NOT take a pair argument. The old code called it
+        # once per pair without switching charts in between, so every pair in
+        # self.pairs was overwritten with the SAME price (whichever asset
+        # happened to be visually open). Full select_asset() per pair per cycle
+        # is too slow for a 30s scan cycle (each call does UI menu clicks + sleeps),
+        # so instead we rotate: switch to exactly one pair per scan cycle, read
+        # its price, advance the pointer. Over N cycles all N pairs get refreshed.
+        if self.exec_agent.bot and BOT_AVAILABLE and self.pairs:
+            idx = getattr(self, "_price_rotation_idx", 0) % len(self.pairs)
+            pair = self.pairs[idx]
+            self._price_rotation_idx = idx + 1
+            try:
+                selected = await self.exec_agent.bot.select_asset(pair)
+                if not selected:
+                    log.warning(f"[Orchestrator] Could not switch to {pair} for price refresh")
+                else:
                     live_price = await self.exec_agent.bot.get_current_price()
-                    if live_price is not None and _is_plausible_price(live_price):
+                    if live_price is not None and _is_plausible_price(pair, live_price):
                         _LIVE_PRICE_CACHE[pair] = live_price
-                        log.debug(f"[Orchestrator] Live price {pair}: {live_price:.5f}")
-                except Exception as e:
-                    log.debug(f"[Orchestrator] Price refresh failed {pair}: {e}")
+                        log.info(f"[Orchestrator] Live price {pair}: {live_price:.5f}")
+                    else:
+                        log.warning(
+                            f"[Orchestrator] {pair}: implausible/missing price "
+                            f"({live_price!r}) — check CSS selectors in get_current_price()"
+                        )
+            except Exception as e:
+                log.warning(f"[Orchestrator] Price refresh failed for {pair}: {e}", exc_info=True)
 
         # ── Build data provider ────────────────────────────────────────────
         # OTC pairs → browser tick buffer   (live price from page)
